@@ -8,10 +8,12 @@ from gmail_service import (
 from llm_service import (
     classify_email_intent,
     extract_cargo_details,
+    get_missing_fields,
+    generate_missing_info_reply,
     generate_reply
 )
 
-from db_service import get_price
+from rate_service import get_rate
 from review_service import review_reply
 
 import json
@@ -77,7 +79,7 @@ def process_email(service, email):
     )
 
     # =====================================================
-    # STEP 2: EXTRACT CARGO DETAILS
+    # STEP 2: EXTRACT SHIPMENT DETAILS
     # =====================================================
 
     print(
@@ -95,12 +97,32 @@ def process_email(service, email):
         )
     )
 
+    # =====================================================
+    # EXTRACT FIELDS
+    # =====================================================
+
     origin = cargo_details.get(
         "origin"
     )
 
     destination = cargo_details.get(
         "destination"
+    )
+
+    shipment_mode = cargo_details.get(
+        "shipment_mode"
+    )
+
+    shipment_type = cargo_details.get(
+        "shipment_type"
+    )
+
+    container_count = cargo_details.get(
+        "container_count"
+    )
+
+    container_type = cargo_details.get(
+        "container_type"
     )
 
     weight_kg = cargo_details.get(
@@ -111,8 +133,207 @@ def process_email(service, email):
         "cargo_type"
     )
 
+    ready_date = cargo_details.get(
+        "ready_date"
+    )
+
+    volume_cbm = cargo_details.get(
+        "volume_cbm"
+    )
+
+    length_cm = cargo_details.get(
+    "length_cm"
+    )
+
+    width_cm = cargo_details.get(
+        "width_cm"
+    )
+
+    height_cm = cargo_details.get(
+        "height_cm"
+    )
+
+    pieces = cargo_details.get(
+        "pieces"
+    )
+
     # =====================================================
-    # VALIDATE REQUIRED INFORMATION
+    # STEP 2A: CHECK MISSING INFORMATION
+    # =====================================================
+
+    print(
+        "\n========== CHECKING REQUIRED INFORMATION =========="
+    )
+
+    missing_fields = get_missing_fields(
+        cargo_details
+    )
+
+    print(
+        "Missing fields:",
+        missing_fields
+    )
+
+    # =====================================================
+    # MISSING INFORMATION
+    # =====================================================
+
+    if missing_fields:
+
+        print(
+            "\n⚠️ Required shipment information is missing."
+        )
+
+        print(
+            "Generating clarification email..."
+        )
+
+        clarification_reply = generate_missing_info_reply(
+            email_body=email["body"],
+            cargo_details=cargo_details,
+            missing_fields=missing_fields
+        )
+
+        print(
+            "\n========== CLARIFICATION REPLY =========="
+        )
+
+        print(
+            clarification_reply
+        )
+
+        # =================================================
+        # GROQ REVIEW OF CLARIFICATION
+        # =================================================
+
+        print(
+            "\n========== GROQ REVIEW =========="
+        )
+
+        review_result = review_reply(
+            customer_email=email["body"],
+            cargo_details=cargo_details,
+            pricing_result={
+                "found": False,
+                "match_type": "missing_information"
+            },
+            draft_reply=clarification_reply
+        )
+
+        print(
+            json.dumps(
+                review_result,
+                indent=4
+            )
+        )
+
+        # =================================================
+        # CHECK REVIEW
+        # =================================================
+
+        if review_result.get("approved") is not True:
+
+            print(
+                "\n❌ CLARIFICATION REPLY REJECTED"
+            )
+
+            issues = review_result.get(
+                "issues",
+                []
+            )
+
+            if issues:
+
+                print(
+                    "\nIssues found:"
+                )
+
+                for issue in issues:
+
+                    print(
+                        "-",
+                        issue
+                    )
+
+            print(
+                "\nEmail remains unread."
+            )
+
+            return "failed"
+
+        # =================================================
+        # SEND CLARIFICATION EMAIL
+        # =================================================
+
+        print(
+            "\n✅ CLARIFICATION REPLY APPROVED"
+        )
+
+        print(
+            "\n========== SENDING CLARIFICATION EMAIL =========="
+        )
+
+        try:
+
+            send_result = send_reply(
+                service=service,
+                email=email,
+                reply_body=clarification_reply
+            )
+
+            print(
+                "\n✅ Clarification reply sent successfully!"
+            )
+
+            print(
+                "Sent message ID:",
+                send_result["id"]
+            )
+
+        except Exception as e:
+
+            print(
+                "\n❌ ERROR SENDING CLARIFICATION REPLY"
+            )
+
+            print(e)
+
+            print(
+                "\nEmail remains unread."
+            )
+
+            return "failed"
+
+        # =================================================
+        # MARK ORIGINAL EMAIL AS READ
+        # =================================================
+
+        try:
+
+            mark_email_as_read(
+                service,
+                email["id"]
+            )
+
+            print(
+                "✅ Original email marked as read."
+            )
+
+        except Exception as e:
+
+            print(
+                "\n⚠️ Clarification reply was sent, "
+                "but the original email could not be marked as read."
+            )
+
+            print(e)
+
+            return "sent_not_marked"
+
+        return "success"
+
+    # =====================================================
+    # VALIDATION AFTER MISSING-FIELD CHECK
     # =====================================================
 
     if not origin:
@@ -139,10 +360,10 @@ def process_email(service, email):
 
         return "failed"
 
-    if weight_kg is None:
+    if not shipment_mode:
 
         print(
-            "\n❌ Weight not found."
+            "\n❌ Shipment mode could not be determined."
         )
 
         print(
@@ -152,32 +373,186 @@ def process_email(service, email):
         return "failed"
 
     # =====================================================
-    # STEP 3: DATABASE PRICE LOOKUP
+    # STEP 3: EXCEL RATE LOOKUP
     # =====================================================
 
     print(
-        "\n========== POSTGRESQL =========="
+        "\n========== EXCEL RATE LOOKUP =========="
     )
 
     print(
-        "Searching pricing table..."
+        "Shipment mode:",
+        shipment_mode
     )
 
-    price_result = get_price(
+    print(
+        "Origin:",
+        origin
+    )
+
+    print(
+        "Destination:",
+        destination
+    )
+
+    if shipment_type:
+
+        print(
+            "Shipment type:",
+            shipment_type
+        )
+
+    if container_type:
+
+        print(
+            "Container type:",
+            container_type
+        )
+
+    if container_count:
+
+        print(
+            "Container count:",
+            container_count
+        )
+
+    if weight_kg is not None:
+
+        print(
+            "Weight:",
+            weight_kg,
+            "KG"
+        )
+
+    print(
+        "\nSearching Excel rate sheets..."
+    )
+
+    rate_result = get_rate(
+
+        shipment_mode=shipment_mode,
         origin=origin,
         destination=destination,
+        shipment_type=shipment_type,
+        container_type=container_type,
+        container_count=container_count,
         weight_kg=weight_kg,
-        cargo_type=cargo_type
+        shipment_date=ready_date,
+        cargo_type=cargo_type,
+        length_cm=length_cm,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        pieces=pieces,
+        volume_cbm=volume_cbm
     )
 
-    if not price_result:
+    print(
+        "\nRATE RESULT:"
+    )
+
+    print(
+        json.dumps(
+            rate_result,
+            indent=4,
+            default=str
+        )
+    )
+
+    # =====================================================
+    # STEP 3A: HANDLE RATE RESULT
+    # =====================================================
+
+    match_type = rate_result.get(
+        "match_type"
+    )
+
+    # -----------------------------------------------------
+    # CASE 1:
+    # NO RATE AT ALL
+    # -----------------------------------------------------
+
+    if not rate_result.get("found") and match_type == "none":
 
         print(
-            "\n❌ No matching price found."
+            "\n❌ No applicable rate found."
         )
 
         print(
-            "No reply will be sent."
+            "Generating no-rate reply..."
+        )
+
+        # IMPORTANT:
+        # We DO generate a reply here.
+        # The customer should be informed that
+        # no applicable rate exists.
+
+    # -----------------------------------------------------
+    # CASE 2:
+    # ALTERNATIVE EXISTS BUT QUANTITY IS INVALID
+    # -----------------------------------------------------
+
+    elif (
+        not rate_result.get("found")
+        and match_type == "alternative_quantity_exceeded"
+    ):
+
+        print(
+            "\n⚠️ Requested rate is not applicable."
+        )
+
+        print(
+            "An alternative exists, but the requested "
+            "quantity is outside its allowed range."
+        )
+
+    # -----------------------------------------------------
+    # CASE 3:
+    # EXACT RATE
+    # -----------------------------------------------------
+
+    elif match_type == "exact":
+
+        print(
+            "\n✅ EXACT RATE FOUND"
+        )
+
+    # -----------------------------------------------------
+    # CASE 4:
+    # VALID ALTERNATIVE RATE
+    # -----------------------------------------------------
+
+    elif match_type == "alternative":
+
+        print(
+            "\n⚠️ EXACT RATE NOT AVAILABLE"
+        )
+
+        print(
+            "✅ ALTERNATIVE RATE FOUND"
+        )
+
+        print(
+            "Requested:",
+            rate_result.get(
+                "requested_container_type"
+            )
+        )
+
+        print(
+            "Alternative:",
+            rate_result.get(
+                "alternative_container_type"
+            )
+        )
+
+    # -----------------------------------------------------
+    # UNKNOWN RESULT
+    # -----------------------------------------------------
+
+    else:
+
+        print(
+            "\n⚠️ Unexpected rate result."
         )
 
         print(
@@ -186,16 +561,8 @@ def process_email(service, email):
 
         return "failed"
 
-    price = price_result["price"]
-
-    currency = price_result["currency"]
-
-    print(
-        f"Price found: {price} {currency}"
-    )
-
     # =====================================================
-    # STEP 4: GENERATE REPLY
+    # STEP 4: GENERATE AI REPLY
     # =====================================================
 
     print(
@@ -205,8 +572,7 @@ def process_email(service, email):
     reply = generate_reply(
         email_body=email["body"],
         cargo_details=cargo_details,
-        price=price,
-        currency=currency
+        pricing_result=rate_result
     )
 
     print(
@@ -224,8 +590,7 @@ def process_email(service, email):
     review_result = review_reply(
         customer_email=email["body"],
         cargo_details=cargo_details,
-        price=price,
-        currency=currency,
+        pricing_result=rate_result,
         draft_reply=reply
     )
 
@@ -432,7 +797,6 @@ def main():
 
             results["failed"] += 1
 
-            # Print technical traceback for debugging
             traceback.print_exc()
 
             continue
@@ -480,5 +844,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     main()

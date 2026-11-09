@@ -5,3 +5,4 @@ google-genai
 python-dotenv
 psycopg2-binary
 groq
+openpyxl
